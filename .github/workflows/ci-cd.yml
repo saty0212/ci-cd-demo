@@ -1,4 +1,3 @@
-```yaml
 name: CI/CD Pipeline
 on:
   push:
@@ -60,4 +59,3 @@ jobs:
     - name: Terraform Apply
       working-directory: terraform
       run: terraform apply -auto-approve plan.tfout
-```
