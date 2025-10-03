@@ -14,6 +14,9 @@ jobs:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION }}
+    - name: Debug AWS credentials
+      run: |
+        aws sts get-caller-identity
     - name: Set up Terraform
       uses: hashicorp/setup-terraform@v3
     - name: Terraform Init
@@ -28,7 +31,7 @@ jobs:
 
   build-and-push:
     runs-on: ubuntu-latest
-    needs: deploy  # Ensure ECR repo is created before pushing
+    needs: deploy
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
