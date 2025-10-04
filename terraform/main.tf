@@ -1,135 +1,173 @@
-name: CI/CD Pipeline
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
 
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:  # Allow manual trigger
+provider "aws" {
+  region = var.aws_region
+}
 
-env:
-  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
-  ECR_REPOSITORY: ci-cd-demo-repo
+data "aws_vpc" "default" {
+  default = true
+}
 
-jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.9'
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-x86_64"]
+  }
 
-    - name: Run tests
-      run: |
-        # Add your tests here
-        python -c "from app import app; print('App imports successfully')"
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+resource "aws_security_group" "app_sg" {
+  name        = "ci-cd-demo-sg"
+  description = "Security group for CI/CD demo app"
+  vpc_id      = data.aws_vpc.default.id
 
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow HTTP"
+  }
 
-    - name: Build, tag, and push Docker image to ECR
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow SSH"
+  }
 
-    - name: Set up Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.6.0
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound"
+  }
 
-    - name: Terraform Init
-      working-directory: terraform
-      run: terraform init
+  tags = {
+    Name = "ci-cd-demo-sg"
+  }
+}
 
-    - name: Terraform Format
-      working-directory: terraform
-      run: terraform fmt -recursive
+resource "aws_ecr_repository" "app_repo" {
+  name                 = "ci-cd-demo-repo"
+  image_tag_mutability = "MUTABLE"
 
-    - name: Terraform Validate
-      working-directory: terraform
-      run: terraform validate
+  image_scanning_configuration {
+    scan_on_push = true
+  }
 
-    - name: Import Existing Resources (if any)
-      working-directory: terraform
-      continue-on-error: true
-      env:
-        TF_VAR_aws_region: ${{ env.AWS_REGION }}
-        TF_VAR_key_name: ${{ secrets.EC2_KEY_NAME || '' }}
-      run: |
-        # Try to import existing resources
-        terraform import -var="aws_region=$TF_VAR_aws_region" -var="key_name=$TF_VAR_key_name" aws_ecr_repository.app_repo ci-cd-demo-repo || true
-        terraform import -var="aws_region=$TF_VAR_aws_region" -var="key_name=$TF_VAR_key_name" aws_iam_role.ec2_role ci-cd-demo-ec2-role || true
-        terraform import -var="aws_region=$TF_VAR_aws_region" -var="key_name=$TF_VAR_key_name" aws_iam_role_policy.ec2_ecr_policy ci-cd-demo-ec2-role:ci-cd-demo-ecr-policy || true
-        terraform import -var="aws_region=$TF_VAR_aws_region" -var="key_name=$TF_VAR_key_name" aws_iam_instance_profile.ec2_profile ci-cd-demo-ec2-profile || true
+  tags = {
+    Name = "ci-cd-demo-repo"
+  }
+}
 
-    - name: Terraform Plan
-      working-directory: terraform
-      env:
-        TF_VAR_aws_region: ${{ env.AWS_REGION }}
-        TF_VAR_key_name: ${{ secrets.EC2_KEY_NAME || '' }}
-      run: |
-        terraform plan -out=tfplan \
-          -var="aws_region=$TF_VAR_aws_region" \
-          -var="key_name=$TF_VAR_key_name"
+resource "aws_iam_role" "ec2_role" {
+  name = "ci-cd-demo-ec2-role"
 
-    - name: Terraform Apply
-      working-directory: terraform
-      env:
-        TF_VAR_aws_region: ${{ env.AWS_REGION }}
-        TF_VAR_key_name: ${{ secrets.EC2_KEY_NAME || '' }}
-      run: |
-        terraform apply -auto-approve tfplan
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = { Service = "ec2.amazonaws.com" }
+        Action    = "sts:AssumeRole"
+      }
+    ]
+  })
 
-    - name: Get Terraform Outputs
-      working-directory: terraform
-      id: terraform-output
-      run: |
-        echo "ec2_ip=$(terraform output -raw ec2_public_ip)" >> $GITHUB_OUTPUT
-        echo "ecr_url=$(terraform output -raw ecr_repository_url)" >> $GITHUB_OUTPUT
-        echo "app_url=$(terraform output -raw app_url)" >> $GITHUB_OUTPUT
+  tags = {
+    Name = "ci-cd-demo-ec2-role"
+  }
+}
 
-    - name: Wait for application to be ready
-      run: |
-        echo "Waiting for application to start..."
-        sleep 60
-        for i in {1..10}; do
-          if curl -f -s http://${{ steps.terraform-output.outputs.ec2_ip }} > /dev/null; then
-            echo "Application is ready!"
-            exit 0
-          fi
-          echo "Attempt $i: Application not ready yet, waiting..."
-          sleep 30
-        done
-        echo "Warning: Application may not be fully ready yet"
+resource "aws_iam_role_policy" "ec2_ecr_policy" {
+  name = "ci-cd-demo-ecr-policy"
+  role = aws_iam_role.ec2_role.id
 
-    - name: Summary
-      run: |
-        echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "✅ **Deployment Successful**" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "- **Application URL**: ${{ steps.terraform-output.outputs.app_url }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **EC2 Public IP**: ${{ steps.terraform-output.outputs.ec2_ip }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **ECR Repository**: ${{ steps.terraform-output.outputs.ecr_url }}" >> $GITHUB_STEP_SUMMARY
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken",
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_instance_profile" "ec2_profile" {
+  name = "ci-cd-demo-ec2-profile"
+  role = aws_iam_role.ec2_role.name
+
+  tags = {
+    Name = "ci-cd-demo-ec2-profile"
+  }
+}
+
+resource "aws_instance" "app_instance" {
+  ami                    = data.aws_ami.amazon_linux.id
+  instance_type          = "t3.micro"
+  key_name               = var.key_name != "" ? var.key_name : null
+  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
+  vpc_security_group_ids = [aws_security_group.app_sg.id]
+  subnet_id              = tolist(data.aws_subnets.default.ids)[0]
+
+  user_data = templatefile("${path.module}/user_data.sh", {
+    aws_region         = var.aws_region
+    ecr_repository_url = aws_ecr_repository.app_repo.repository_url
+  })
+
+  user_data_replace_on_change = true
+
+  tags = {
+    Name = "ci-cd-demo-instance"
+  }
+
+  depends_on = [
+    aws_iam_role_policy.ec2_ecr_policy
+  ]
+}
+
+output "ecr_repository_url" {
+  description = "ECR repository URL"
+  value       = aws_ecr_repository.app_repo.repository_url
+}
+
+output "ec2_public_ip" {
+  description = "EC2 instance public IP"
+  value       = aws_instance.app_instance.public_ip
+}
+
+output "app_url" {
+  description = "Application URL"
+  value       = "http://${aws_instance.app_instance.public_ip}"
+}
