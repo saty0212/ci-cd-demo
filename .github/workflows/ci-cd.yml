@@ -61,16 +61,30 @@ jobs:
 
     - name: Terraform Init
       working-directory: terraform
-      run: terraform init
+      env:
+        TF_VAR_aws_region: ${{ env.AWS_REGION }}
+      run: terraform init -backend-config="region=$TF_VAR_aws_region"
 
-    - name: Terraform Format Check
+    - name: Terraform Format
       working-directory: terraform
-      run: terraform fmt -check
-      continue-on-error: true
+      run: terraform fmt -recursive
 
     - name: Terraform Validate
       working-directory: terraform
       run: terraform validate
+
+    - name: Import Existing Resources (if any)
+      working-directory: terraform
+      continue-on-error: true
+      env:
+        TF_VAR_aws_region: ${{ env.AWS_REGION }}
+        TF_VAR_key_name: ${{ secrets.EC2_KEY_NAME || '' }}
+      run: |
+        # Try to import existing resources
+        terraform import -var="aws_region=$TF_VAR_aws_region" -var="key_name=$TF_VAR_key_name" aws_ecr_repository.app_repo ci-cd-demo-repo || true
+        terraform import -var="aws_region=$TF_VAR_aws_region" -var="key_name=$TF_VAR_key_name" aws_iam_role.ec2_role ci-cd-demo-ec2-role || true
+        terraform import -var="aws_region=$TF_VAR_aws_region" -var="key_name=$TF_VAR_key_name" aws_iam_role_policy.ec2_ecr_policy ci-cd-demo-ec2-role:ci-cd-demo-ecr-policy || true
+        terraform import -var="aws_region=$TF_VAR_aws_region" -var="key_name=$TF_VAR_key_name" aws_iam_instance_profile.ec2_profile ci-cd-demo-ec2-profile || true
 
     - name: Terraform Plan
       working-directory: terraform
