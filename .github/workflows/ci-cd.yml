@@ -80,11 +80,22 @@ jobs:
         TF_VAR_aws_region: ${{ env.AWS_REGION }}
         TF_VAR_key_name: ${{ secrets.EC2_KEY_NAME || '' }}
       run: |
-        # Try to import existing resources
+        # Get security group ID if it exists
+        SG_ID=$(aws ec2 describe-security-groups \
+          --filters "Name=group-name,Values=ci-cd-demo-sg" \
+          --query "SecurityGroups[0].GroupId" \
+          --output text 2>/dev/null || echo "")
+        
+        # Import existing resources
         terraform import -var="aws_region=$TF_VAR_aws_region" -var="key_name=$TF_VAR_key_name" aws_ecr_repository.app_repo ci-cd-demo-repo || true
         terraform import -var="aws_region=$TF_VAR_aws_region" -var="key_name=$TF_VAR_key_name" aws_iam_role.ec2_role ci-cd-demo-ec2-role || true
         terraform import -var="aws_region=$TF_VAR_aws_region" -var="key_name=$TF_VAR_key_name" aws_iam_role_policy.ec2_ecr_policy ci-cd-demo-ec2-role:ci-cd-demo-ecr-policy || true
         terraform import -var="aws_region=$TF_VAR_aws_region" -var="key_name=$TF_VAR_key_name" aws_iam_instance_profile.ec2_profile ci-cd-demo-ec2-profile || true
+        
+        # Import security group if it exists
+        if [ -n "$SG_ID" ] && [ "$SG_ID" != "None" ]; then
+          terraform import -var="aws_region=$TF_VAR_aws_region" -var="key_name=$TF_VAR_key_name" aws_security_group.app_sg "$SG_ID" || true
+        fi
 
     - name: Terraform Plan
       working-directory: terraform
