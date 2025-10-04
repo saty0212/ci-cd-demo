@@ -133,4 +133,3 @@ jobs:
         echo "- **Application URL**: ${{ steps.terraform-output.outputs.app_url }}" >> $GITHUB_STEP_SUMMARY
         echo "- **EC2 Public IP**: ${{ steps.terraform-output.outputs.ec2_ip }}" >> $GITHUB_STEP_SUMMARY
         echo "- **ECR Repository**: ${{ steps.terraform-output.outputs.ecr_url }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Image Tag**: ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
